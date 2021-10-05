@@ -5,68 +5,44 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
 	"strings"
 
 	mapset "github.com/deckarep/golang-set"
 
-	"github.com/alex-held/expand/graph"
+	"github.com/alex-held/expand/internal/graph"
+	"github.com/alex-held/expand/internal/parse"
 )
 
-const (
-	dOLLAR        = "$"
-	dOUBLE_DOLLAR = "$$"
-)
-
-const (
-	dOLLAR_TOKEN_REPLACEMENT        = "##<&DOLLAR_TOKEN&>##"
-	dOUBLE_DOLLAR_TOKEN_REPLACEMENT = "##<&DOUBLE_DOLLAR_TOKEN&>##"
-)
-
-type Resolver interface {
-	Resolve() (resolved map[string]string, err error)
+// Expander expands registered variables recursively
+type Expander interface {
+	Expand() (resolved Expansions, err error)
 }
 
-func isExpanded(val string) bool {
-	val = strings.ReplaceAll(val, dOUBLE_DOLLAR, dOUBLE_DOLLAR_TOKEN_REPLACEMENT)
-	if strings.Contains(val, dOLLAR) {
-		return false
-	}
-	return true
-}
+// Expansions contains the expanded values accessible by its id
+type Expansions map[string]string
 
-func parseUnexpanded(raw string) (unexpanded []string) {
-	unexpanded = []string{}
-	val := strings.ReplaceAll(raw, dOUBLE_DOLLAR, dOUBLE_DOLLAR_TOKEN_REPLACEMENT)
-	req := make(map[string]struct{})
+// Get returns the value for an id and whether a value was found
+func (r Expansions) Get(id string) (res string, ok bool) { res, ok = r[id]; return res, ok }
 
-	if strings.Contains(val, dOLLAR) {
-		r := regexp.MustCompile(`\$([\w_]*)`)
-		unmatched := r.FindAllString(val, -1)
-		for _, u := range unmatched {
-			if _, ok := req[u]; ok {
-				continue
-			}
-			unexpanded = append(unexpanded, strings.TrimPrefix(u, "$"))
-			req[u] = struct{}{}
-		}
-	}
+// MustGet returns the value for an id
+func (r Expansions) MustGet(id string) string { return r[id] }
 
-	return unexpanded
-}
+// Contains returns whether Expansions contain a value for an id
+func (r Expansions) Contains(id string) bool { _, ok := r.Get(id); return ok }
 
 type resolver struct {
 	env        map[string]string
-	unresolved map[string]*unres
+	unexpanded map[string]*parse.Unexpanded
 }
 
-func (r *resolver) Resolve() (resolved map[string]string, err error) {
+// Expand returns expanded Expansions and maybe an error
+func (r *resolver) Expand() (resolved Expansions, err error) {
 	var nodes []*graph.Node
 	for key, _ := range r.env {
 		nodes = append(nodes, graph.NewNode(key))
 	}
-	for key, u := range r.unresolved {
-		nodes = append(nodes, graph.NewNode(key, u.depends...))
+	for key, u := range r.unexpanded {
+		nodes = append(nodes, graph.NewNode(key, u.Depends...))
 	}
 
 	g := graph.New(nodes...)
@@ -93,10 +69,10 @@ func (r *resolver) Resolve() (resolved map[string]string, err error) {
 			continue
 		}
 
-		if val, ok := r.unresolved[node.Name]; ok {
+		if val, ok := r.unexpanded[node.Name]; ok {
 
 			depsSet := mapset.NewSet()
-			for _, dep := range val.depends {
+			for _, dep := range val.Depends {
 				depsSet.Add(dep)
 			}
 
@@ -105,12 +81,12 @@ func (r *resolver) Resolve() (resolved map[string]string, err error) {
 				return r.env, errors.New(fmt.Sprintf("unable to resolve '%s'", node.Name))
 			}
 
-			log.Printf("resolving '%s' with raw value '%s' and deps %v\n", val.id, val.val, val.depends)
-			resolved := val.Resolve(r.env)
+			log.Printf("resolving '%s' with raw value '%s' and deps %v\n", val.ID, val.RawValue, val.Depends)
+			resolved := val.Expand(r.env)
 			log.Printf("[%d] resolved '%s' with value '%s'\n", i, node.Name, resolved)
 
-			envSet.Add(val.id)
-			r.env[val.id] = resolved
+			envSet.Add(val.ID)
+			r.env[val.ID] = resolved
 
 			continue
 		}
@@ -121,36 +97,10 @@ func (r *resolver) Resolve() (resolved map[string]string, err error) {
 	return r.env, nil
 }
 
-func (u *unres) Resolve(vals map[string]string) string {
-	if isExpanded(u.val) {
-		return u.val
-	}
-
-	val := strings.ReplaceAll(u.val, dOUBLE_DOLLAR, dOUBLE_DOLLAR_TOKEN_REPLACEMENT)
-
-	for _, dep := range u.depends {
-		if subst, ok := vals[dep]; ok {
-			newVal := strings.ReplaceAll(val, fmt.Sprintf("$%s", dep), subst)
-			val = newVal
-		}
-		newVal := strings.ReplaceAll(val, fmt.Sprintf("$%s", dep), "")
-		val = newVal
-	}
-
-	val = strings.ReplaceAll(val, dOUBLE_DOLLAR_TOKEN_REPLACEMENT, dOUBLE_DOLLAR)
-	return val
-}
-
-type unres struct {
-	id      string
-	val     string
-	depends []string
-}
-
-// NewResolverWithEnvironment create a new Resolver with variables from os.Environ and the provided variables
+// NewExpanderWithEnvironment create a new Expander with variables from os.Environ and the provided variables
 //
 // The provided variables overwrite the os.Environ variables
-func NewResolverWithEnvironment(m map[string]string) Resolver {
+func NewExpanderWithEnvironment(m map[string]string) Expander {
 	vars := map[string]string{}
 	for _, env := range os.Environ() {
 		i := strings.Index(env, "=")
@@ -160,31 +110,43 @@ func NewResolverWithEnvironment(m map[string]string) Resolver {
 		vars[key] = val
 	}
 
-	return NewResolver(vars)
+	return NewExpander(vars)
 }
 
-// NewResolver create a new Resolver with the provided variables
-func NewResolver(vars map[string]string) Resolver {
+// NewExpander create a new Expander with the provided variables
+func NewExpander(vars map[string]string) Expander {
 	r := &resolver{
 		env:        map[string]string{},
-		unresolved: map[string]*unres{},
+		unexpanded: map[string]*parse.Unexpanded{},
 	}
 
 	for key, val := range vars {
-		if isExpanded(val) {
+		if parse.IsExpanded(val) {
 			log.Printf("adding initial expanded: key=%s, val=%s\n", key, val)
 			r.env[key] = val
 		}
 
-		unresolved := parseUnexpanded(val)
-		u := unres{
-			id:      key,
-			val:     val,
-			depends: unresolved,
+		unresolved := parse.ParseUnexpanded(val)
+		u := parse.Unexpanded{
+			ID:       key,
+			RawValue: val,
+			Depends:  unresolved,
 		}
-		log.Printf("adding unres key=%s; val=%s; deps:%v\n", u.id, u.val, u.depends)
-		r.unresolved[key] = &u
+		log.Printf("adding unres key=%s; val=%s; deps:%v\n", u.ID, u.RawValue, u.Depends)
+		r.unexpanded[key] = &u
 	}
 
 	return r
+}
+
+// ExpandWithEnvironment expands vars using os.Environ and returns Expansions and an error
+func ExpandWithEnvironment(vars map[string]string) (Expansions, error) {
+	r := NewExpanderWithEnvironment(vars)
+	return r.Expand()
+}
+
+// Expand expands vars as Expansions and an error
+func Expand(vars map[string]string) (Expansions, error) {
+	r := NewExpander(vars)
+	return r.Expand()
 }

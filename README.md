@@ -5,7 +5,7 @@
   </a>
 </p>
 
-> expands variables recursively
+> Expands variables recursively
 
 ## Author
 

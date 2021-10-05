@@ -25,6 +25,7 @@ func displayGraph(graph Graph) string {
 	return sb.String()
 }
 
+// Resolve resolves the Graph returning a new Graph with Node in a resolvable order
 func (g *Graph) Resolve() (res Graph, err error) {
 	return resolveGraph(*g)
 }
@@ -49,7 +50,7 @@ func resolveGraph(graph Graph) (Graph, error) {
 	}
 
 	// Iteratively find and remove nodes from the graph which have no dependencies.
-	// If at some point there are still nodes in the graph and we cannot find
+	// If at some point there are still nodes in the graph, and we cannot find
 	// nodes without dependencies, that means we have a circular dependency
 	var resolved Graph
 	for len(nodeDependencies) != 0 {
@@ -61,14 +62,14 @@ func resolveGraph(graph Graph) (Graph, error) {
 			}
 		}
 
-		// If there aren't any ready nodes, then we have a cicular dependency
+		// If there aren't any ready nodes, then we have a circular dependency
 		if readySet.Cardinality() == 0 {
 			var g Graph
 			for name := range nodeDependencies {
 				g = append(g, nodeNames[name])
 			}
 
-			return g, errors.New("Circular dependency found")
+			return g, errors.New("circular dependency found")
 		}
 
 		// Remove the ready nodes and add them to the resolved graph
@@ -100,7 +101,7 @@ type Node struct {
 	Deps []string
 }
 
-
+// New returns a new Graph of the provided nodes
 func New(nodes ...*Node) Graph {
 	g := Graph{}
 	for _, node := range nodes {
@@ -109,10 +110,10 @@ func New(nodes ...*Node) Graph {
 	return g
 }
 
+// Nodes returns the Node of the Graph
 func (g Graph) Nodes() []*Node {
 	return g
 }
-
 
 // NewNode creates a new node
 func NewNode(name string, deps ...string) *Node {
